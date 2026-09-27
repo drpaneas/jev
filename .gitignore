@@ -1,0 +1,16 @@
+# Local credentials and configuration.
+.env
+.env.*
+!.env.example
+.qodo/
+.codex/
+.idea/
+.vscode/
+.DS_Store
+
+# Local build, test, and profiling output.
+/bin/
+/coverage.out
+/coverage.html
+*.test
+*.prof
