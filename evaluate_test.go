@@ -4,7 +4,6 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,7 +42,7 @@ func TestEvaluateMixedBatchContract(t *testing.T) {
 			t.Error("incorrect score wire shape")
 		}
 		w.Header().Set("X-Request-ID", "batch-id")
-		io.WriteString(w, `{"model":"jev-1.13.0","usage":{"input_tokens":123,"output_tokens":30},"answers":{
+		writeClientResponse(t, w, `{"model":"jev-1.13.0","usage":{"input_tokens":123,"output_tokens":30},"answers":{
 			"team":{"type":"choice","choice":"billing","probabilities":{"billing":0.97,"technical":0.03},"confidence":0.93},
 			"urgent":{"type":"noul","noul":0.02},
 			"impact":{"type":"score","score":1.2,"probabilities":{"0":0,"1":0.8,"2":0.2},"confidence":0.6,"legend":{"0":"Low","1":"Medium","2":"High"}}
@@ -94,7 +93,7 @@ func TestEvaluateNeverPartiallyWritesDestinations(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-Request-ID", "answer-validation-id")
-				io.WriteString(w, `{"model":"jev-test","usage":{"input_tokens":1,"output_tokens":1},"answers":`+answers+`}`)
+				writeClientResponse(t, w, `{"model":"jev-test","usage":{"input_tokens":1,"output_tokens":1},"answers":`+answers+`}`)
 			})
 			meta, err := c.Evaluate(t.Context(), "state", Into("first", Noul("One?"), &first), Into("second", Noul("Two?"), &second))
 			var responseErr *ResponseError
@@ -144,6 +143,7 @@ func TestEvaluatePreflight(t *testing.T) {
 			t.Fatalf("error=%v", err)
 		}
 	}
+	//nolint:staticcheck // SA1012: Verify nil-context rejection before making a request.
 	if _, err := c.Ask(nil, "state", Noul("Q?")); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("error=%v", err)
 	}
@@ -154,7 +154,7 @@ func TestEvaluatePreflight(t *testing.T) {
 
 func TestConcurrentClientAndQuestionReuse(t *testing.T) {
 	c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"model":"jev-test","usage":{"input_tokens":1,"output_tokens":1},"answers":{"answer":{"type":"choice","choice":"yes","probabilities":{"yes":0.95,"no":0.05},"confidence":0.9}}}`)
+		writeClientResponse(t, w, `{"model":"jev-test","usage":{"input_tokens":1,"output_tokens":1},"answers":{"answer":{"type":"choice","choice":"yes","probabilities":{"yes":0.95,"no":0.05},"confidence":0.9}}}`)
 	})
 	q := Choice("Does this fit?", Opt("yes", nil), Opt("no", nil))
 	var wg sync.WaitGroup
@@ -195,7 +195,7 @@ func TestEvaluateConstructorErrorNamesQuestionAndPreservesCause(t *testing.T) {
 func TestAskResponseErrorRetainsRequestIDAndJSONCause(t *testing.T) {
 	c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Request-ID", "single-answer-id")
-		io.WriteString(w, `{"model":"jev-test","usage":{"input_tokens":1,"output_tokens":1},"answers":{"answer":{"type":"noul","noul":"private-response-content"}}}`)
+		writeClientResponse(t, w, `{"model":"jev-test","usage":{"input_tokens":1,"output_tokens":1},"answers":{"answer":{"type":"noul","noul":"private-response-content"}}}`)
 	})
 	answer, err := c.Ask(t.Context(), "state", Noul("Urgent?"))
 	var responseErr *ResponseError

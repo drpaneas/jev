@@ -212,7 +212,7 @@ func (c *Client) evaluate(ctx context.Context, state any, questions map[string]j
 			limit = errorLimit
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-		resp.Body.Close()
+		_ = resp.Body.Close() // The read result determines whether the response is usable.
 		if err := ctx.Err(); err != nil {
 			return nil, Metadata{}, err
 		}

@@ -10,6 +10,7 @@ import (
 // This lets applications pass a typed bound method to workers without adapters.
 func TestClientAskFunctionValue(t *testing.T) {
 	var client *Client
+	//nolint:staticcheck // ST1023: The target type is required to infer the generic method's type arguments.
 	var ask func(context.Context, any, Question[Probability]) (Probability, error) = client.Ask
 	answer, err := ask(t.Context(), "state", Noul("Is this urgent?"))
 	if !errors.Is(err, ErrInvalidInput) {

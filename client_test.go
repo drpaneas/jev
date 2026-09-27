@@ -33,6 +33,13 @@ func clientForServer(t *testing.T, handler http.HandlerFunc, options ...ClientOp
 	return c
 }
 
+func writeClientResponse(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	if _, err := io.WriteString(w, body); err != nil {
+		t.Errorf("write test response: %v", err)
+	}
+}
+
 func TestClientWireContract(t *testing.T) {
 	c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || r.URL.Path != "/v1/systemone" || r.Header.Get("Authorization") != "Bearer test-key" || r.Header.Get("Content-Type") != "application/json" {
@@ -50,7 +57,7 @@ func TestClientWireContract(t *testing.T) {
 			t.Errorf("unexpected wire payload: %+v", wire)
 		}
 		w.Header().Set("X-Request-ID", "request-123")
-		io.WriteString(w, clientValidResponse)
+		writeClientResponse(t, w, clientValidResponse)
 	}, WithModel("custom-model"))
 	answers, meta, err := c.evaluate(t.Context(), map[string]string{"message": "hello"}, clientQuestions)
 	if err != nil || len(answers) != 1 || meta.Model != "jev-test" || meta.RequestID != "request-123" || meta.Usage != (Usage{12, 3}) {
@@ -59,7 +66,7 @@ func TestClientWireContract(t *testing.T) {
 }
 
 func TestClientValidStates(t *testing.T) {
-	c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, clientValidResponse) })
+	c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) { writeClientResponse(t, w, clientValidResponse) })
 	for _, state := range []any{"", "text", []string{}, []any{"a", 1}, map[string]any{}, map[string]any{"elapsed": time.Second}, jsontext.Value(` {"x":1} `)} {
 		if _, _, err := c.evaluate(t.Context(), state, clientQuestions); err != nil {
 			t.Errorf("state %#v: %v", state, err)
@@ -69,7 +76,10 @@ func TestClientValidStates(t *testing.T) {
 
 func TestClientRejectsInvalidInputLocally(t *testing.T) {
 	var calls atomic.Int32
-	c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); io.WriteString(w, clientValidResponse) })
+	c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		writeClientResponse(t, w, clientValidResponse)
+	})
 	for _, state := range []any{nil, true, false, 42, 1.5, []string(nil), map[string]string(nil), jsontext.Value(`null`), jsontext.Value(`bad`), make(chan int)} {
 		if _, _, err := c.evaluate(t.Context(), state, clientQuestions); !errors.Is(err, ErrInvalidInput) {
 			t.Errorf("state %#v: %v", state, err)
@@ -78,6 +88,7 @@ func TestClientRejectsInvalidInputLocally(t *testing.T) {
 	if _, _, err := c.evaluate(t.Context(), "text", nil); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("no questions: %v", err)
 	}
+	//nolint:staticcheck // SA1012: Verify nil-context rejection before making a request.
 	if _, _, err := c.evaluate(nil, "text", clientQuestions); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("nil context: %v", err)
 	}
@@ -113,7 +124,7 @@ func TestClientResponseValidation(t *testing.T) {
 		"oversize":         strings.Repeat(" ", responseLimit+1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) })
+			c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) { writeClientResponse(t, w, body) })
 			if _, _, err := c.evaluate(t.Context(), "text", clientQuestions); !errors.Is(err, ErrInvalidResponse) {
 				t.Fatalf("error = %v", err)
 			}
@@ -140,7 +151,7 @@ func TestClientRetriesExplicitResponses(t *testing.T) {
 				if string(body) != firstBody.Load() {
 					t.Error("retry changed request body")
 				}
-				io.WriteString(w, clientValidResponse)
+				writeClientResponse(t, w, clientValidResponse)
 			})
 			_, _, err := c.evaluate(t.Context(), "text", clientQuestions)
 			if retryable(status) {
@@ -168,7 +179,8 @@ func TestClientRetryLimitAndAPIError(t *testing.T) {
 			w.Header().Set("Retry-After", "0")
 			w.Header().Set("X-Request-ID", "failed-123")
 			w.WriteHeader(503)
-			io.WriteString(w, strings.Repeat("private error body ", errorLimit))
+			// The client deliberately stops reading at its response limit.
+			_, _ = io.WriteString(w, strings.Repeat("private error body ", errorLimit))
 		}, options...)
 		_, _, err := c.evaluate(t.Context(), "text", clientQuestions)
 		if apiErr, ok := errors.AsType[*APIError](err); !ok || apiErr.StatusCode != 503 || apiErr.RequestID != "failed-123" || len(apiErr.Body) != errorLimit || strings.Contains(err.Error(), "private") || int(calls.Load()) != retries+1 {
@@ -208,7 +220,9 @@ func TestClientTransportErrorNotRetriedAndTotalTimeout(t *testing.T) {
 func TestClientCancellation(t *testing.T) {
 	started := make(chan struct{})
 	c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Errorf("read test request: %v", err)
+		}
 		close(started)
 		<-r.Context().Done()
 	})
@@ -266,7 +280,7 @@ func TestClientWaitsUntilRetryIsDue(t *testing.T) {
 						w.WriteHeader(http.StatusTooManyRequests)
 						return
 					}
-					io.WriteString(w, clientValidResponse)
+					writeClientResponse(t, w, clientValidResponse)
 				})
 				done := make(chan error, 1)
 				go func() {
@@ -363,7 +377,7 @@ func TestClientDisablesRedirectsWithoutMutatingCaller(t *testing.T) {
 func TestClientMalformedSuccessRetainsRequestID(t *testing.T) {
 	c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Request-ID", "invalid-response-123")
-		io.WriteString(w, `{"model":`)
+		writeClientResponse(t, w, `{"model":`)
 	})
 	_, err := c.Ask(t.Context(), "state", Noul("?"))
 	if !errors.Is(err, ErrInvalidResponse) || !strings.Contains(err.Error(), "invalid-response-123") {
@@ -377,7 +391,8 @@ func TestClientMalformedSuccessRetainsRequestID(t *testing.T) {
 func TestClientErrorBodyCapacityIsBounded(t *testing.T) {
 	c := clientForServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		io.WriteString(w, strings.Repeat("a", errorLimit)+"discarded")
+		// The client deliberately stops reading at its response limit.
+		_, _ = io.WriteString(w, strings.Repeat("a", errorLimit)+"discarded")
 	})
 	_, err := c.Ask(t.Context(), "state", Noul("?"))
 	api, ok := errors.AsType[*APIError](err)
